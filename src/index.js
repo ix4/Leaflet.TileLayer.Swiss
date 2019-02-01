@@ -1,5 +1,97 @@
 import L from 'leaflet';
-import Proj from 'proj4leaflet';
+import { lv03, lv95 } from 'swissgrid';
+
+const Projection = {
+  bounds: L.bounds(L.point(2420000, 1030000), L.point(2900000, 1350000)),
+  project: ({ lng, lat }) => {
+    const [E, N] = lv95.project([lng, lat]);
+    return L.point(E, N);
+  },
+  unproject: ({ x: E, y: N }) => {
+    const [lng, lat] = lv95.unproject([E, N]);
+    return L.latLng(lat, lng);
+  },
+};
+
+const CRS = L.Class.extend({
+  includes: L.CRS,
+
+  options: {
+    transformation: new L.Transformation(1, 0, -1, 0),
+  },
+
+  initialize(options) {
+    this.projection = Projection;
+
+    L.setOptions(this, options);
+
+    if (this.options.origin) {
+      this.transformation = new L.Transformation(1, -this.options.origin[0], -1, this.options.origin[1]);
+    }
+
+    if (this.options.scales) {
+      this._scales = this.options.scales;
+    } else if (this.options.resolutions) {
+      this._scales = [];
+      for (let i = this.options.resolutions.length - 1; i >= 0; i--) {
+        if (this.options.resolutions[i]) {
+          this._scales[i] = 1 / this.options.resolutions[i];
+        }
+      }
+    }
+
+    this.infinite = !this.options.bounds;
+  },
+
+  scale(zoom) {
+    const iZoom = Math.floor(zoom);
+    if (zoom === iZoom) {
+      return this._scales[zoom];
+    }
+    // Non-integer zoom, interpolate
+    const baseScale = this._scales[iZoom];
+    const nextScale = this._scales[iZoom + 1];
+    const scaleDiff = nextScale - baseScale;
+    const zDiff = (zoom - iZoom);
+    return baseScale + scaleDiff * zDiff;
+  },
+
+  zoom(scale) {
+    // Find closest number in this._scales, down
+    const downScale = this._closestElement(this._scales, scale);
+    const downZoom = this._scales.indexOf(downScale);
+    // Check if scale is downScale => return array index
+    if (scale === downScale) {
+      return downZoom;
+    }
+    if (downScale === undefined) {
+      return -Infinity;
+    }
+    // Interpolate
+    const nextZoom = downZoom + 1;
+    const nextScale = this._scales[nextZoom];
+    if (nextScale === undefined) {
+      return Infinity;
+    }
+    const scaleDiff = nextScale - downScale;
+    return (scale - downScale) / scaleDiff + downZoom;
+  },
+
+  distance: L.CRS.Earth.distance,
+
+  R: L.CRS.Earth.R,
+
+  /* Get the closest lowest element in an array */
+  _closestElement(array, element) {
+    let low;
+    for (let i = array.length; i--;) {
+      if (array[i] <= element && (low === undefined || low < array[i])) {
+        low = array[i];
+      }
+    }
+    return low;
+  },
+});
 
 // Available resolutions
 // Source: https://api3.geo.admin.ch/services/sdiservices.html#wmts
@@ -11,7 +103,7 @@ const resolutions = [
 function makeCrs(options) {
   const bounds = L.bounds(options.min, options.max);
   const origin = [options.min.x, options.max.y];
-  return new Proj.CRS(options.code, options.definition, {
+  return new CRS({
     bounds,
     origin,
     resolutions,
@@ -19,10 +111,6 @@ function makeCrs(options) {
 }
 
 const EPSG_2056 = makeCrs({
-  // Definition for projected coordinate system CH1903+ / LV95 (EPSG:2056)
-  // Source: https://epsg.io/2056.js
-  code: 'EPSG:2056',
-  definition: '+proj=somerc +lat_0=46.95240555555556 +lon_0=7.439583333333333 +k_0=1 +x_0=2600000 +y_0=1200000 +ellps=bessel +towgs84=674.374,15.056,405.346,0,0,0,0 +units=m +no_defs',
   // Bounding box for tiles in EPSG:2056
   // Source: https://wmts.geo.admin.ch/EPSG/2056/1.0.0/WMTSCapabilities.xml
   min: L.point(2420000, 1030000),
@@ -31,11 +119,8 @@ const EPSG_2056 = makeCrs({
 const project2056 = latLng => EPSG_2056.projection.project(latLng);
 const unproject2056 = point => EPSG_2056.projection.unproject(point);
 
+/*
 const EPSG_21781 = makeCrs({
-  // Definition for projected coordinate system CH1903 / LV03 (EPSG:21781)
-  // Source: https://epsg.io/21781.js
-  code: 'EPSG:21781',
-  definition: '+proj=somerc +lat_0=46.95240555555556 +lon_0=7.439583333333333 +k_0=1 +x_0=600000 +y_0=200000 +ellps=bessel +towgs84=674.4,15.1,405.3,0,0,0,0 +units=m +no_defs',
   // Bounding box for tiles in EPSG:21781
   // Source: https://wmts.geo.admin.ch/EPSG/21781/1.0.0/WMTSCapabilities.xml
   min: L.point(420000, 30000),
@@ -43,6 +128,7 @@ const EPSG_21781 = makeCrs({
 });
 const project21781 = latLng => EPSG_21781.projection.project(latLng);
 const unproject21781 = point => EPSG_21781.projection.unproject(point);
+*/
 
 const latLngBounds = L.latLngBounds(
   unproject2056(EPSG_2056.options.bounds.min),
@@ -68,7 +154,7 @@ const Swiss = L.TileLayer.extend({
   },
   initialize(options) {
     L.setOptions(this, options);
-    const url = URLS[this.options.crs.code];
+    const url = URLS['EPSG:2056'];
     L.TileLayer.prototype.initialize.call(this, url, this.options);
   },
 });
@@ -77,9 +163,11 @@ Swiss.latLngBounds = latLngBounds;
 Swiss.EPSG_2056 = EPSG_2056;
 Swiss.project_2056 = project2056;
 Swiss.unproject_2056 = unproject2056;
+/*
 Swiss.EPSG_21781 = EPSG_21781;
 Swiss.project_21781 = project21781;
 Swiss.unproject_21781 = unproject21781;
+*/
 
 L.tileLayer.swiss = options => new Swiss(options);
 
